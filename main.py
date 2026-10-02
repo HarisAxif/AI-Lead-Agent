@@ -1,438 +1,686 @@
-﻿import time
-from typing import TypedDict
-
-from dotenv import load_dotenv
-from ddgs import DDGS
-from pydantic import BaseModel
-from langgraph.graph import StateGraph, START, END
-from langchain_google_genai import ChatGoogleGenerativeAI
-
+﻿from dotenv import load_dotenv
 
 load_dotenv()
 
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3.1-flash-lite",
-    temperature=0
+from langgraph.graph import (
+    StateGraph,
+    START,
+    END,
 )
 
+from schemas import AgentState
 
-class SearchRequest(BaseModel):
-    location: str
-    industry: str
-    number_of_leads: int
-    service: str
-
-
-class LeadAnalysis(BaseModel):
-    company: str
-    website: str
-    qualified: bool
-    reason: str
-    opportunity: str
-
-
-request_llm = llm.with_structured_output(
-    SearchRequest
+from clarify import (
+    understand_request,
+    clarify_request,
 )
 
-structured_llm = llm.with_structured_output(
-    LeadAnalysis
+from planner import (
+    make_research_plan,
+    show_research_plan,
 )
 
+from discovery import (
+    search_companies,
+    MAX_ROUNDS,
+)
 
-class AgentState(TypedDict):
-    location: str
-    industry: str
-    number_of_leads: int
-    service: str
-    companies: list
-    researched_companies: list
+from qualify import research_companies
 
 
-def search_companies(state: AgentState):
+# =========================================================
+# SHOW FINAL RESULTS
+# =========================================================
 
-    print("\n" + "=" * 70)
-    print("SEARCHING FOR COMPANIES")
-    print("=" * 70)
+def show_results(
+    state: AgentState,
+):
 
-    location = state["location"]
-    industry = state["industry"]
-    number_of_leads = state["number_of_leads"]
-
-    query = f"{industry} in {location}"
-
-    print(f"\nSearch Query : {query}")
-    print(f"Target       : {number_of_leads} results")
-
-    companies = []
-
-    try:
-
-        with DDGS() as ddgs:
-
-            results = ddgs.text(
-                query,
-                max_results=number_of_leads
-            )
-
-            for result in results:
-
-                company = {
-                    "title": result.get("title", ""),
-                    "url": result.get("href", ""),
-                    "description": result.get("body", "")
-                }
-
-                companies.append(company)
-
-    except Exception as error:
-
-        print(f"\nDDGS Search Error: {error}")
-
-    print(
-        f"\nFound {len(companies)} search results."
-    )
-
-    for index, company in enumerate(
-        companies,
-        start=1
-    ):
-
-        print(
-            f"{index}. {company['title']}"
-        )
-
-    return {
-        "companies": companies
-    }
-
-
-def research_companies(state: AgentState):
-
-    print("\n" + "=" * 70)
-    print("RESEARCHING & QUALIFYING COMPANIES")
-    print("=" * 70)
-
-    companies = state["companies"]
-    service = state["service"]
-
-    researched_companies = []
-
-    for index, company in enumerate(
-        companies,
-        start=1
-    ):
-
-        print(
-            f"\n[{index}/{len(companies)}] "
-            f"Checking: {company['title']}"
-        )
-
-        prompt = f"""
-You are a B2B lead qualification assistant.
-
-We are selling this service:
-
-{service}
-
-COMPANY INFORMATION
-
-Company / Search Result:
-{company["title"]}
-
-Website:
-{company["url"]}
-
-Search Description:
-{company["description"]}
-
-YOUR TASK
-
-Determine whether this company could realistically
-be a potential customer for our service.
-
-A qualified company should have a reasonable
-business use for the service.
-
-Do not invent information that is not available
-in the provided company information.
-
-Return:
-
-company:
-The company name.
-
-website:
-The website.
-
-qualified:
-true if this looks like a potential buyer.
-false if it does not.
-
-reason:
-Briefly explain why it qualifies or does not qualify.
-
-opportunity:
-If qualified, briefly explain how our service could
-potentially help this company.
-
-If it is not qualified, explain that there is no
-clear opportunity based on the available information.
-"""
-
-        max_attempts = 3
-
-        for attempt in range(max_attempts):
-
-            try:
-
-                analysis = structured_llm.invoke(
-                    prompt
-                )
-
-                researched_companies.append(
-                    analysis.model_dump()
-                )
-
-                if analysis.qualified:
-                    print("    Status: QUALIFIED")
-                else:
-                    print("    Status: NOT QUALIFIED")
-
-                break
-
-            except Exception as error:
-
-                print(
-                    f"    Gemini Error "
-                    f"({attempt + 1}/{max_attempts})"
-                )
-
-                print(f"    {error}")
-
-                if attempt < max_attempts - 1:
-
-                    print(
-                        "    Waiting 5 seconds before retry..."
-                    )
-
-                    time.sleep(5)
-
-                else:
-
-                    print(
-                        "    Could not analyze this company."
-                    )
-
-                    print("    Skipping...")
-
-    return {
-        "researched_companies":
-            researched_companies
-    }
-
-
-def show_results(state: AgentState):
-
-    results = state["researched_companies"]
-
-    qualified = [
-        company
-        for company in results
-        if company["qualified"]
+    qualified = state[
+        "qualified_leads"
     ]
 
-    rejected = [
-        company
-        for company in results
-        if not company["qualified"]
+    rejected = state[
+        "rejected_leads"
     ]
 
-    print("\n\n" + "=" * 70)
-    print("AI LEAD GENERATION RESULTS")
-    print("=" * 70)
-
     print(
-        f"\nCompanies Researched : {len(results)}"
+        "\n\n" + "=" * 70
     )
 
     print(
-        f"Qualified Leads      : {len(qualified)}"
+        "AI LEAD GENERATION RESULTS"
     )
 
     print(
-        f"Not Qualified        : {len(rejected)}"
+        "=" * 70
     )
 
-    print("\n" + "=" * 70)
-    print("QUALIFIED LEADS")
-    print("=" * 70)
+    print(
+        f"\nRequested Leads : "
+        f"{state['number_of_leads']}"
+    )
+
+    print(
+        f"Qualified Leads : "
+        f"{len(qualified)}"
+    )
+
+    print(
+        f"Rejected        : "
+        f"{len(rejected)}"
+    )
+
+    print(
+        f"Search Rounds   : "
+        f"{state['round']}"
+    )
+
+    print(
+        "\n" + "=" * 70
+    )
+
+    print(
+        "QUALIFIED LEADS"
+    )
+
+    print(
+        "=" * 70
+    )
 
     if not qualified:
-        print("\nNo qualified leads were found.")
+
+        print(
+            "\nNo qualified leads were found."
+        )
 
     for index, lead in enumerate(
         qualified,
-        start=1
+        start=1,
     ):
 
-        print("\n" + "─" * 70)
-        print(f"LEAD #{index}")
-        print("─" * 70)
-
         print(
-            f"Company     : {lead['company']}"
+            "\n" + "─" * 70
         )
 
         print(
-            f"Website     : {lead['website']}"
+            f"LEAD #{index}"
         )
 
         print(
-            "Status      : QUALIFIED"
+            "─" * 70
         )
 
         print(
-            f"Reason      : {lead['reason']}"
+            f"Company : "
+            f"{lead['company']}"
         )
 
         print(
-            f"Opportunity : {lead['opportunity']}"
+            f"Website : "
+            f"{lead['website']}"
         )
 
-    if rejected:
+        print(
+            f"Tier    : "
+            f"{lead['tier']}"
+        )
 
-        print("\n\n" + "=" * 70)
-        print("NOT QUALIFIED")
-        print("=" * 70)
+        # ---------------------------------------------
+        # OFFICE LOCATIONS
+        # ---------------------------------------------
 
-        for index, lead in enumerate(
-            rejected,
-            start=1
+        if lead.get(
+            "offices"
         ):
 
-            print("\n" + "─" * 70)
-
             print(
-                f"{index}. {lead['company']}"
+                "Offices : "
+                + ", ".join(
+                    lead[
+                        "offices"
+                    ]
+                )
             )
 
-            print(
-                f"Website : {lead['website']}"
-            )
+        # ---------------------------------------------
+        # QUALIFICATION REASON
+        # ---------------------------------------------
+
+        print(
+            f"Reason  : "
+            f"{lead['reason']}"
+        )
+
+        # ---------------------------------------------
+        # NEW: VISUAL REVIEW
+        # ---------------------------------------------
+
+        if lead.get(
+            "visual_summary"
+        ):
 
             print(
-                f"Reason  : {lead['reason']}"
+                f"Visual  : "
+                f"{lead['visual_summary']}"
             )
 
-    print("\n" + "=" * 70)
-    print("SEARCH COMPLETE")
-    print("=" * 70)
+        # ---------------------------------------------
+        # SALES OPPORTUNITY
+        # ---------------------------------------------
+
+        print(
+            f"Pitch   : "
+            f"{lead['opportunity']}"
+        )
+
+        # ---------------------------------------------
+        # EMAILS
+        # ---------------------------------------------
+
+        if lead.get(
+            "emails"
+        ):
+
+            print(
+                "Emails  : "
+                + ", ".join(
+                    lead[
+                        "emails"
+                    ]
+                )
+            )
+
+        # ---------------------------------------------
+        # PHONE NUMBERS
+        # ---------------------------------------------
+
+        if lead.get(
+            "phones"
+        ):
+
+            print(
+                "Phones  : "
+                + ", ".join(
+                    lead[
+                        "phones"
+                    ]
+                )
+            )
+
+        # ---------------------------------------------
+        # PAGES INSPECTED
+        # ---------------------------------------------
+
+        if lead.get(
+            "pages_read"
+        ):
+
+            print(
+                "Pages inspected:"
+            )
+
+            for page in lead[
+                "pages_read"
+            ]:
+
+                print(
+                    f"  - {page}"
+                )
+
+        # ---------------------------------------------
+        # VERIFIED EVIDENCE
+        # ---------------------------------------------
+
+        if lead.get(
+            "evidence"
+        ):
+
+            print(
+                "Evidence:"
+            )
+
+            for evidence in lead[
+                "evidence"
+            ]:
+
+                print(
+                    f"  - "
+                    f"{evidence['indicator']}"
+                )
+
+                print(
+                    f"    Source: "
+                    f"{evidence['source']}"
+                )
+
+                print(
+                    f"    Evidence: "
+                    f"{evidence['evidence']}"
+                )
+
+        else:
+
+            print(
+                "Evidence: "
+                "No individually verified evidence returned."
+            )
+
+    # =================================================
+    # SEARCH SUMMARY
+    # =================================================
+
+    print(
+        "\n" + "=" * 70
+    )
+
+    print(
+        "SEARCH COMPLETE"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    if (
+        len(
+            qualified
+        )
+        < state[
+            "number_of_leads"
+        ]
+    ):
+
+        print(
+            "\nThe agent did not find the full "
+            "requested number of qualified leads."
+        )
+
+        print(
+            "This is intentional: it is better to "
+            "return fewer leads than fill the result "
+            "with weak or unsupported candidates."
+        )
+
+    else:
+
+        print(
+            "\nRequested number of "
+            "qualified leads found."
+        )
 
     return {}
 
+
+# =========================================================
+# DECIDE WHETHER TO SEARCH AGAIN
+# =========================================================
+
+def route_after_research(
+    state: AgentState,
+):
+
+    qualified_count = len(
+        state[
+            "qualified_leads"
+        ]
+    )
+
+    requested_count = state[
+        "number_of_leads"
+    ]
+
+    current_round = state[
+        "round"
+    ]
+
+    # Enough good leads found
+    if (
+        qualified_count
+        >= requested_count
+    ):
+
+        return "show_results"
+
+    # Maximum search rounds reached
+    if (
+        current_round
+        >= MAX_ROUNDS
+    ):
+
+        return "show_results"
+
+    # Otherwise search again
+    return "search_companies"
+
+
+# =========================================================
+# BUILD LANGGRAPH
+# =========================================================
 
 graph_builder = StateGraph(
     AgentState
 )
 
 
+# -------------------------
+# Nodes
+# -------------------------
+
 graph_builder.add_node(
     "search_companies",
-    search_companies
+    search_companies,
 )
 
 graph_builder.add_node(
     "research_companies",
-    research_companies
+    research_companies,
 )
 
 graph_builder.add_node(
     "show_results",
-    show_results
+    show_results,
 )
 
+
+# -------------------------
+# Start
+# -------------------------
 
 graph_builder.add_edge(
     START,
-    "search_companies"
+    "search_companies",
 )
+
+
+# -------------------------
+# Search → Research
+# -------------------------
 
 graph_builder.add_edge(
     "search_companies",
-    "research_companies"
+    "research_companies",
 )
 
-graph_builder.add_edge(
+
+# -------------------------
+# Research → Search again
+# OR
+# Research → Results
+# -------------------------
+
+graph_builder.add_conditional_edges(
     "research_companies",
-    "show_results"
+    route_after_research,
+    {
+        "search_companies":
+            "search_companies",
+
+        "show_results":
+            "show_results",
+    },
 )
+
+
+# -------------------------
+# Finish
+# -------------------------
 
 graph_builder.add_edge(
     "show_results",
-    END
+    END,
 )
 
 
+# Compile graph
 graph = graph_builder.compile()
 
 
-print("\n" + "=" * 70)
-print("AI LEAD GENERATION AGENT")
-print("=" * 70)
+# =========================================================
+# PROGRAM START
+# =========================================================
 
-user_request = input(
-    "\nWhat companies do you want to find?\n\n> "
+print(
+    "\n" + "=" * 70
+)
+
+print(
+    "AI LEAD GENERATION AGENT"
+)
+
+print(
+    "=" * 70
 )
 
 
-print("\nUnderstanding your request...")
+# =========================================================
+# USER REQUEST
+# =========================================================
+
+user_request = input(
+    "\nWhat companies do you want to find?"
+    "\n\n> "
+)
 
 
-request = request_llm.invoke(
+print(
+    "\nUnderstanding your request..."
+)
+
+
+# First extraction
+request = understand_request(
     user_request
 )
 
 
-initial_state = {
-    "location": request.location,
-    "industry": request.industry,
-    "number_of_leads": request.number_of_leads,
-    "service": request.service,
-    "companies": [],
-    "researched_companies": []
+# Clarify anything missing / broad
+request = clarify_request(
+    request
+)
+
+
+# =========================================================
+# FINAL USER SEARCH REQUIREMENTS
+# =========================================================
+
+print(
+    "\n" + "=" * 70
+)
+
+print(
+    "SEARCH PLAN"
+)
+
+print(
+    "=" * 70
+)
+
+
+print(
+    f"\nLocation : "
+    f"{request.location}"
+)
+
+print(
+    f"Industry : "
+    f"{request.industry}"
+)
+
+print(
+    f"Leads    : "
+    f"{request.number_of_leads}"
+)
+
+print(
+    f"Service  : "
+    f"{request.service}"
+)
+
+
+# =========================================================
+# DYNAMIC RESEARCH PLANNER
+# =========================================================
+
+print(
+    "\nCreating research strategy..."
+)
+
+
+research_plan = make_research_plan(
+    request
+)
+
+
+show_research_plan(
+    research_plan
+)
+
+
+# =========================================================
+# INITIAL LANGGRAPH STATE
+# =========================================================
+
+initial_state: AgentState = {
+
+    "location":
+        request.location,
+
+    "industry":
+        request.industry,
+
+    "number_of_leads":
+        request.number_of_leads,
+
+    "service":
+        request.service,
+
+    # Dynamic Gemini research plan
+    "plan":
+        research_plan.model_dump(),
+
+    # Candidates found by DDGS in current round
+    "companies":
+        [],
+
+    # Final qualified leads
+    "qualified_leads":
+        [],
+
+    # Rejected candidates
+    "rejected_leads":
+        [],
+
+    # Domains already checked
+    "seen_domains":
+        [],
+
+    # Search round counter
+    "round":
+        0,
 }
 
 
-print("\n" + "=" * 70)
-print("SEARCH PLAN")
-print("=" * 70)
+# =========================================================
+# RUN AGENT
+# =========================================================
 
 print(
-    f"\nLocation : {initial_state['location']}"
-)
-
-print(
-    f"Industry : {initial_state['industry']}"
+    "\n" + "=" * 70
 )
 
 print(
-    f"Leads    : {initial_state['number_of_leads']}"
+    "STARTING LEAD RESEARCH"
 )
 
 print(
-    f"Service  : {initial_state['service']}"
-)
-
-print("\nStarting agent...")
-
-
-final_state = graph.invoke(
-    initial_state
+    "=" * 70
 )
 
 
-print("\n" + "=" * 70)
-print("AGENT FINISHED")
-print("=" * 70)
+if research_plan.visual_review_needed:
+
+    print(
+        "\nVisual website inspection: ENABLED"
+    )
+
+    print(
+        "Chromium will render candidate websites "
+        "and Gemini will receive desktop/mobile views."
+    )
+
+else:
+
+    print(
+        "\nVisual website inspection: NOT REQUIRED"
+    )
+
+    print(
+        "The research planner determined that visual "
+        "inspection does not materially help this service."
+    )
+
+
+print(
+    "\nStarting agent..."
+)
+
+
+try:
+
+    final_state = graph.invoke(
+        initial_state
+    )
+
+except KeyboardInterrupt:
+
+    print(
+        "\n\nAgent stopped by user."
+    )
+
+    raise SystemExit
+
+
+except Exception as error:
+
+    print(
+        "\n" + "=" * 70
+    )
+
+    print(
+        "AGENT ERROR"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    print(
+        f"\n{type(error).__name__}: "
+        f"{error}"
+    )
+
+    print(
+        "\nThe program stopped before "
+        "the research workflow completed."
+    )
+
+    raise
+
+
+# =========================================================
+# FINISHED
+# =========================================================
+
+print(
+    "\n" + "=" * 70
+)
+
+print(
+    "AGENT FINISHED"
+)
+
+print(
+    "=" * 70
+)
