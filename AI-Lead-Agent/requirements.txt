@@ -1,0 +1,11 @@
+pydantic>=2
+langgraph
+ddgs
+httpx
+certifi
+beautifulsoup4
+playwright
+python-dotenv
+phonenumbers
+pytest
+google-genai>=1.0
