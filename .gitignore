@@ -1,5 +1,10 @@
 .env
 .venv/
 __pycache__/
-*.pyc
-lead_agent.db
+.cache/
+.pytest_cache/
+pytest-of-haris/
+runs/
+*.db
+%SystemDrive%/
+AI-Lead-Agent/
